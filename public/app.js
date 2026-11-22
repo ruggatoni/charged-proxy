@@ -6,6 +6,17 @@
 
   const $ = (sel) => document.querySelector(sel);
 
+  // Set by electron/preload.cjs when running in the Charged Browser app.
+  const desktop = window.chargedApp || null;
+  const HOME_TITLE = desktop ? "Charged Browser" : "The Charged Proxy";
+  const appTitle = $("#appTitle");
+
+  function setPageTitle(t) {
+    document.title = t ? `${t} · Charged` : HOME_TITLE;
+    appTitle.textContent = t || "";
+  }
+  setPageTitle("");
+
   /* ---------------- settings (per-browser) ---------------- */
 
   const DEFAULTS = {
@@ -263,7 +274,7 @@
 
   document.addEventListener("keydown", (e) => {
     const typing = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
-    if (e.key === "/" && browser.hidden && !dialog.open && $("#dms").hidden && !typing) {
+    if (e.key === "/" && browser.hidden && !dialog.open && !typing) {
       e.preventDefault();
       searchInput.focus();
     }
@@ -380,8 +391,7 @@
 
   function syncTitle() {
     try {
-      const t = frame.contentDocument && frame.contentDocument.title;
-      document.title = t ? `${t} · Charged` : "The Charged Proxy";
+      setPageTitle(frame.contentDocument && frame.contentDocument.title);
     } catch {}
   }
 
@@ -409,7 +419,9 @@
     }
   }
 
-  function openBrowser(url) {
+  // `src` is an already-proxied path (from a popup or new window); otherwise
+  // the real URL gets proxied here.
+  function openBrowser(url, src) {
     browser.hidden = false;
     // Take the home screen (and its animations) out of the page entirely
     // while browsing so the proxied site gets the whole renderer.
@@ -417,9 +429,9 @@
     bgEl.hidden = true;
     searchInput.blur();
     document.body.style.overflow = "hidden";
-    addrInput.value = url;
+    addrInput.value = url || "";
     loadStart();
-    frame.src = proxied(url);
+    frame.src = src || proxied(url);
     startSync();
     if (sparks) sparks.pause();
   }
@@ -439,7 +451,7 @@
     home.hidden = false;
     bgEl.hidden = false;
     document.body.style.overflow = "";
-    document.title = "The Charged Proxy";
+    setPageTitle("");
     loadbar.className = "loadbar";
     if (sparks) sparks.resume();
     searchInput.value = "";
@@ -458,7 +470,7 @@
   });
   addrInput.addEventListener("focus", () => addrInput.select());
   addrInput.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { addrInput.blur(); syncAddress(); }
+    if (e.key === "Escape") { addrInput.blur(); showAddress(decodeFrameUrl()); }
   });
 
   $("#bBack").addEventListener("click", () => { try { frame.contentWindow.history.back(); } catch {} });
@@ -641,4 +653,46 @@
   })();
 
   if (settings.sparks) sparks.start();
+
+  /* ---------------- links into the app ---------------- */
+  // #go=<url or search>      open a site
+  // #open=<proxied path>     reopen a page that's already proxied (popups, new windows)
+
+  async function handleHash(hash) {
+    const m = /^#(go|open)=(.+)$/.exec(hash || "");
+    if (!m) return;
+    if (location.hash) history.replaceState(null, "", location.pathname);
+
+    let value;
+    try { value = decodeURIComponent(m[2]); } catch { return; }
+
+    if (m[1] === "go") return go(value);
+    if (!value.startsWith("/scramjet/") && !value.startsWith(__uv$config.prefix)) return;
+    try { await ready; } catch { return; }
+    openBrowser(null, value);
+  }
+
+  window.addEventListener("hashchange", () => handleHash(location.hash));
+  handleHash(location.hash);
+
+  /* ---------------- desktop app shortcuts ---------------- */
+
+  if (desktop) {
+    $("#bPop").title = "Open in new window";
+    $("#bPop").setAttribute("aria-label", "Open in new window");
+
+    desktop.onCommand((cmd, arg) => {
+      if (cmd === "hash") return handleHash(arg);
+      if (cmd === "address") {
+        if (browser.hidden) searchInput.focus();
+        else { addrInput.focus(); addrInput.select(); }
+        return;
+      }
+      if (browser.hidden) return;
+      if (cmd === "reload") $("#bReload").click();
+      else if (cmd === "back") $("#bBack").click();
+      else if (cmd === "forward") $("#bFwd").click();
+      else if (cmd === "home") closeBrowser();
+    });
+  }
 })();
